@@ -1,0 +1,89 @@
+{
+  "aggregate": {
+    "faithfulness": 0.8291666666666668,
+    "answer_relevancy": 0.8193058794631639,
+    "context_precision": 0.94999999993625,
+    "context_recall": 0.9333333333333332
+  },
+  "num_questions": 20,
+  "failures": [
+    {
+      "question": "Một nhân viên Senior có 9 năm thâm niên được nghỉ bao nhiêu ngày phép năm và lương trong khoảng nào?",
+      "worst_metric": "answer_relevancy",
+      "score": 0.0,
+      "diagnosis": "Answer does not match question",
+      "suggested_fix": "Improve prompt template"
+    },
+    {
+      "question": "Nhân viên tạm ứng 15 triệu, sau 20 ngày mới thanh toán. Bị phạt bao nhiêu?",
+      "worst_metric": "faithfulness",
+      "score": 0.3333333333333333,
+      "diagnosis": "LLM hallucinating",
+      "suggested_fix": "Tighten prompt, lower temperature"
+    },
+    {
+      "question": "Muốn mua thiết bị trị giá 55 triệu cần ai phê duyệt?",
+      "worst_metric": "faithfulness",
+      "score": 0.0,
+      "diagnosis": "LLM hallucinating",
+      "suggested_fix": "Tighten prompt, lower temperature"
+    },
+    {
+      "question": "Nghỉ phép không lương 20 ngày cần ai phê duyệt?",
+      "worst_metric": "faithfulness",
+      "score": 0.5,
+      "diagnosis": "LLM hallucinating",
+      "suggested_fix": "Tighten prompt, lower temperature"
+    },
+    {
+      "question": "Nhân viên được nghỉ bao nhiêu ngày phép năm?",
+      "worst_metric": "context_precision",
+      "score": 0.49999999995,
+      "diagnosis": "Too many irrelevant chunks",
+      "suggested_fix": "Add reranking or metadata filter"
+    },
+    {
+      "question": "Nhân viên được tài trợ khóa học 25 triệu, nghỉ việc sau 8 tháng hoàn thành khóa học. Phải hoàn trả bao nhiêu?",
+      "worst_metric": "faithfulness",
+      "score": 0.5,
+      "diagnosis": "LLM hallucinating",
+      "suggested_fix": "Tighten prompt, lower temperature"
+    },
+    {
+      "question": "Lương thử việc của nhân viên Junior mức cao nhất là bao nhiêu?",
+      "worst_metric": "faithfulness",
+      "score": 0.5,
+      "diagnosis": "LLM hallucinating",
+      "suggested_fix": "Tighten prompt, lower temperature"
+    },
+    {
+      "question": "Có cần kích hoạt xác thực đa yếu tố (MFA) không?",
+      "worst_metric": "context_recall",
+      "score": 0.5,
+      "diagnosis": "Missing relevant chunks",
+      "suggested_fix": "Improve chunking or add BM25"
+    },
+    {
+      "question": "Bảo hiểm sức khỏe PVI có hạn mức bao nhiêu cho nhân viên?",
+      "worst_metric": "context_precision",
+      "score": 0.8333333332916666,
+      "diagnosis": "Too many irrelevant chunks",
+      "suggested_fix": "Add reranking or metadata filter"
+    },
+    {
+      "question": "Phụ cấp ăn trưa hàng tháng là bao nhiêu?",
+      "worst_metric": "answer_relevancy",
+      "score": 0.8189649496297514,
+      "diagnosis": "Answer does not match question",
+      "suggested_fix": "Improve prompt template"
+    }
+  ],
+  "latency": {
+    "chunk_ms": 40.87870000512339,
+    "enrich_ms": 422970.4676999827,
+    "index_ms": 57509.347299986985,
+    "search_avg_ms": 160.37130499753403,
+    "rerank_avg_ms": 11343.306419996952,
+    "llm_avg_ms": 2521.779420002713
+  }
+}
