@@ -13,10 +13,10 @@
 | Semantic chunking | M1 | `chunk_semantic()` | Threshold 0.85 (all-MiniLM-L6-v2) tạo **208 chunks, trung bình 99 ký tự**, so với basic là **51 chunks, trung bình 410 ký tự**. Với tiếng Việt, MiniLM (model tiếng Anh) cho similarity thấp giữa các câu liền kề, nên cắt quá vụn (chunk nhỏ nhất chỉ 6 ký tự). Vì vậy pipeline chọn hierarchical. |
 | Hierarchical chunking | M1 | `chunk_hierarchical()` | **87 children (≤256 ký tự)** dùng để retrieve chính xác, sau đó trả về parent (≤2048 ký tự) cho LLM. Đây là lý do context_recall đạt 0.933. |
 | Structure-aware chunking | M1 | `chunk_structure_aware()` | 106 sections, giữ nguyên header trong `metadata["section"]`. Phù hợp với tài liệu có bảng (xem failure #2). |
-| BM25 + Dense fusion | M2 | `reciprocal_rank_fusion()` | BM25 (đã tách từ bằng underthesea) bắt được từ khóa chính xác như "MFA", "PVI"; bge-m3 bắt được các câu hỏi diễn đạt khác đi. RRF (k=60) chỉ dùng thứ hạng nên không cần chuẩn hóa thang điểm của 2 retriever. Search chỉ mất **160 ms/query**. |
-| Cross-encoder reranking | M3 | `CrossEncoderReranker.rerank()` | bge-reranker-v2-m3 rerank 20 → top-3, đưa context_precision lên **0.950** (baseline 0.925). Đổi lại latency **11.3 s/query trên CPU**, chiếm khoảng 80% thời gian xử lý một query. |
-| RAGAS 4 metrics | M4 | `evaluate_ragas()`, `failure_analysis()` | Production: F 0.829 / AR 0.819 / CP 0.950 / CR 0.933, cả 4 đều ≥ 0.75. Faithfulness thấp nhất vì LLM tự tính toán cho các câu numeric (tạm ứng, hoàn trả học phí). |
-| Contextual embeddings | M5 | `_enrich_single_call()` | 1 call/chunk trả về JSON gồm summary + 3 câu hỏi HyQA + câu context + metadata. Câu context và câu hỏi được nối vào `enriched_text` trước khi index. Tốn 423 s ở bước offline, đổi lại Answer Relevancy +0.15 so với baseline. |
+| BM25 + Dense fusion | M2 | `reciprocal_rank_fusion()` | BM25 (đã tách từ bằng underthesea) bắt được từ khóa chính xác như "MFA", "PVI"; bge-m3 bắt được các câu hỏi diễn đạt khác đi. RRF (k=60) chỉ dùng thứ hạng nên không cần chuẩn hóa thang điểm của 2 retriever. Search chỉ mất **162 ms/query**. |
+| Cross-encoder reranking | M3 | `CrossEncoderReranker.rerank()` | bge-reranker-v2-m3 rerank 20 → top-3, đưa context_precision lên **0.983** (baseline 0.933). Đổi lại latency **11.35 s/query trên CPU**, chiếm khoảng 83% thời gian xử lý một query. |
+| RAGAS 4 metrics | M4 | `evaluate_ragas()`, `failure_analysis()` | Production: F 0.879 / AR 0.824 / CP 0.983 / CR 0.933, cả 4 đều ≥ 0.75. Lỗi còn lại tập trung ở các câu numeric: LLM tính sai (tạm ứng → 600k), hoặc phép tính đúng nhưng judge không verify được (lương thử việc 17tr). |
+| Contextual embeddings | M5 | `_enrich_single_call()` | 1 call/chunk trả về JSON gồm summary + 3 câu hỏi HyQA + câu context + metadata. Câu context và câu hỏi được nối vào `enriched_text` trước khi index. Tốn 984 s ở bước offline, đổi lại Answer Relevancy +0.10 so với baseline (0.722 → 0.824). |
 
 ---
 
@@ -39,6 +39,12 @@
 
 **4. Điểm RAGAS có thể bị NaN**
 - RAGAS trả NaN cho một số câu (ví dụ judge parse lỗi), làm `sorted()`/`min()` trong `failure_analysis` cho kết quả sai. Fix: đổi NaN thành 0.0 trước khi phân tích.
+
+**5. Answer Relevancy = 0 cho câu trả lời đúng**
+- Triệu chứng: 13/20 câu có AR = 0, kể cả câu trả lời đúng hoàn toàn ("Phụ cấp ăn trưa 1.000.000 VNĐ/tháng").
+- Error trong log: `Exception raised in Job[9]: BadRequestError(Error code: 400 - ... 'Invalid request, please check your parameters.')`, lặp lại ở các job 13, 17, 21, ... Các job lỗi cách nhau đúng 4, tức là luôn cùng một metric trong 4 metric.
+- Root cause: `answer_relevancy` mặc định `strictness=3`, tức gọi API với `n=3`, nhưng proxy không hỗ trợ `n>1`. RAGAS ghi lần lỗi là NaN, và chính bước đổi NaN thành 0 tôi thêm vào M4 đã che mất lỗi này.
+- Fix: `answer_relevancy.strictness = 1`, chạy lại cả baseline lẫn production → 0 exception. Bài học: một metric bằng 0 cần được nghi là lỗi đo trước khi kết luận pipeline kém.
 
 **Kiến thức còn thiếu & cách bổ sung:** cách RAGAS tách claim để tính faithfulness (đọc source `ragas.metrics._faithfulness`), và đánh đổi giữa latency và độ chính xác của cross-encoder (benchmark bằng `benchmark_reranker()`).
 

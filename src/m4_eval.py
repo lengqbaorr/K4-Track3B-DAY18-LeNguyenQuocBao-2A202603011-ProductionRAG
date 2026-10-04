@@ -47,6 +47,7 @@ def evaluate_ragas(questions: list[str], answers: list[str],
         from ragas import evaluate
         from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
 
+        answer_relevancy.strictness = 1  # proxy rejects n>1 completions (400) -> NaN scores
         dataset = Dataset.from_dict({"question": questions, "answer": answers,
                                      "contexts": contexts, "ground_truth": ground_truths})
         result = evaluate(dataset, metrics=[faithfulness, answer_relevancy,
@@ -93,9 +94,10 @@ def save_report(results: dict, failures: list[dict], path: str = "reports/ragas_
         "num_questions": len(results.get("per_question", [])),
         "failures": failures,
         "latency": latency or {},
+        "per_question": [vars(r) for r in results.get("per_question", [])],
     }
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
+        json.dump(report, f, ensure_ascii=False, indent=2, default=list)  # ragas returns ndarray contexts
     print(f"Report saved to {path}")
 
 

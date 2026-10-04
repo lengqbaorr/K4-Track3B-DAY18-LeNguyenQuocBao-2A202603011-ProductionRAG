@@ -7,94 +7,97 @@
 
 ## RAGAS Scores
 
-Nguồn: `reports/naive_baseline_report.json` và `reports/ragas_report.json` (20 câu hỏi, judge `gpt-4o-mini`).
+Nguồn: `reports/naive_baseline_report.json` và `reports/ragas_report.json` (20 câu hỏi, judge `gpt-4o-mini`, `answer_relevancy.strictness = 1`).
 
 | Metric | Naive Baseline | Production | Δ |
 |--------|---------------|------------|---|
-| Faithfulness | 0.775 | 0.829 | +0.054 |
-| Answer Relevancy | 0.668 | 0.819 | **+0.151** |
-| Context Precision | 0.925 | 0.950 | +0.025 |
-| Context Recall | 0.900 | 0.933 | +0.033 |
+| Faithfulness | 0.846 | **0.879** | +0.033 |
+| Answer Relevancy | 0.722 | **0.824** | **+0.102** |
+| Context Precision | 0.933 | **0.983** | +0.050 |
+| Context Recall | 0.900 | **0.933** | +0.033 |
 
 **Nhận xét:**
-- Cả 4 metric của production đều ≥ 0.75. Answer Relevancy tăng nhiều nhất (+0.15). Lý do: hierarchical retrieval trả về đoạn cha đầy đủ, reranker đẩy đúng đoạn lên top-3, và prompt yêu cầu trả lời ngắn, đúng số liệu.
-- Faithfulness (0.829) là metric thấp nhất. 4/5 câu tệ nhất có nguyên nhân ở bước **generation**, không phải retrieval: retrieval đã tốt (precision 0.95 / recall 0.93), nhưng LLM tự suy luận hoặc tự tính toán vượt quá những gì context nói.
+- Production tốt hơn baseline ở cả 4 metric, và cả 4 đều ≥ 0.75 (Faithfulness ≥ 0.85).
+- Answer Relevancy tăng nhiều nhất (+0.10). Lý do: hierarchical retrieval trả về đoạn cha đầy đủ, reranker đưa đúng đoạn lên top-3, và prompt yêu cầu trả lời ngắn, đúng số liệu.
+- Context Precision đạt 0.983: reranker gần như luôn đặt chunk đúng ở vị trí #1. Vấn đề còn lại nằm ở **vị trí #2–#3** (nhiễu, hoặc bản chính sách cũ) và ở **bước generation** (các câu numeric reasoning).
 
 **Pipeline production:** hierarchical chunking (parent 2048 / child 256) → M5 enrichment (1 call/chunk) → BM25 (underthesea) + bge-m3 dense → RRF (k=60) → bge-reranker-v2-m3 → top-3 parent → `gpt-4o-mini` (temperature 0).
+
+> **Lưu ý về đo lường:** ở lần chạy đầu, 13/20 câu bị Answer Relevancy = 0 dù câu trả lời đúng. Metric này mặc định gọi LLM với `n=3`, API proxy trả `400 Invalid request`, RAGAS ghi các lần lỗi đó là NaN, rồi `evaluate_ragas` đổi NaN thành 0. Sau khi đặt `strictness=1`, cả baseline và production đều được chấm lại không còn lỗi nào. Bài học: phải kiểm tra log của evaluator trước khi tin vào metric.
 
 ## Latency breakdown
 
 | Bước | Thời gian |
 |------|-----------|
-| Chunking (M1, 26 docs) | 41 ms |
-| Enrichment (M5, offline) | 423.0 s |
-| Indexing BM25 + Dense (offline) | 57.5 s |
-| Hybrid search / query | 160 ms |
-| Rerank / query (CPU) | **11 343 ms** |
-| LLM generation / query | 2 522 ms |
+| Chunking (M1, 26 docs) | 167 ms |
+| Enrichment (M5, offline, 1 call/chunk) | 983.9 s |
+| Indexing BM25 + Dense (offline) | 63.9 s |
+| Hybrid search / query | 162 ms |
+| Rerank / query (CPU, 20 candidates) | **11 350 ms** |
+| LLM generation / query | 2 021 ms |
 
-→ Ở thời điểm query, reranker chiếm khoảng 80% latency, do chạy bge-reranker-v2-m3 (568M tham số) trên CPU với 20 candidate. Đây là bottleneck cần tối ưu đầu tiên trước khi đưa lên production.
+→ Ở thời điểm query, reranker chiếm khoảng 83% latency, do chạy bge-reranker-v2-m3 (568M tham số) trên CPU. Đây là bottleneck cần tối ưu đầu tiên.
 
 ## Bottom-5 Failures
 
-> Report hiện tại chỉ lưu metric của từng câu, **không lưu câu trả lời**. Vì vậy mục "Got" bên dưới là hành vi suy ra từ metric và context, chưa phải output nguyên văn. Fix #0 cho pipeline: lưu thêm `answer` + `contexts` của từng câu vào `ragas_report.json`.
+Số liệu và câu trả lời lấy nguyên văn từ `per_question` trong `reports/ragas_report.json`.
 
 ### #1
 - **Question:** Một nhân viên Senior có 9 năm thâm niên được nghỉ bao nhiêu ngày phép năm và lương trong khoảng nào?
 - **Expected:** 15 + 3 = 18 ngày phép (v2024); lương Senior (P3-P4) 20–35 triệu VNĐ/tháng.
-- **Got (suy ra):** Câu trả lời thiếu một nửa hoặc trả lời kiểu "không tìm thấy". RAGAS chấm Answer Relevancy = 0 cho những câu trả lời không cam kết (noncommittal) như vậy.
-- **Worst metric:** answer_relevancy = 0.00
-- **Error Tree:** Output sai → Context đúng? **Chỉ đúng một phần**: câu hỏi multi-hop cần 2 tài liệu (`nghi_phep_nam_v2024.md` + `bang_luong_2024.md`), nhưng top-3 parent có thể bị 1 tài liệu chiếm hết → Query OK? Không: một query gộp 2 ý nên khó khớp tốt với cả hai tài liệu.
-- **Root cause:** Retrieval cho câu hỏi multi-hop. Query không được tách nhỏ, cộng với giới hạn `RERANK_TOP_K=3`.
-- **Suggested fix:** Query decomposition (tách thành 2 sub-query, retrieve riêng rồi gộp kết quả), hoặc nâng top-k lên 5 khi phát hiện câu hỏi chứa "và".
+- **Got:** "Nhân viên có 9 năm thâm niên sẽ được nghỉ **18 ngày phép năm** (15 ngày cơ bản + 3 ngày cộng thêm). Lương sẽ được tính theo quy định của công ty, không có thông tin cụ thể về mức lương trong ngữ cảnh này."
+- **Worst metric:** answer_relevancy = 0.00 (F 0.75, CP 1.0, CR 0.5)
+- **Error Tree:** Output sai một nửa → Context đúng? **Thiếu**: top-3 gồm nghỉ phép v2024, nghỉ phép **v2023** (bản cũ) và nghỉ phép không lương; không có `bang_luong_2024.md` → Query OK? **Không**: một query gộp 2 ý (phép + lương), nên tài liệu nghỉ phép chiếm cả 3 slot.
+- **Root cause:** Câu hỏi multi-hop nhưng retrieve chỉ bằng một query. Bản v2023 lỗi thời còn chiếm mất một slot. Câu "không có thông tin..." bị RAGAS coi là noncommittal, nên AR = 0.
+- **Suggested fix:** Query decomposition ("Senior 9 năm được bao nhiêu ngày phép?" + "Lương Senior bao nhiêu?"), retrieve riêng rồi gộp. Thêm filter bỏ tài liệu superseded (v2023).
 
 ### #2
-- **Question:** Muốn mua thiết bị trị giá 55 triệu cần ai phê duyệt?
-- **Expected:** Trên 50.000.000 VNĐ → Tổng Giám đốc (CEO) phê duyệt.
-- **Got (suy ra):** Câu trả lời có claim không khớp với context. Faithfulness = 0 nghĩa là không claim nào được context hỗ trợ.
-- **Worst metric:** faithfulness = 0.00
-- **Error Tree:** Output sai → Context đúng? Không chắc. `mua_sam.md` lưu thẩm quyền dưới dạng **bảng markdown**, mà `chunk_hierarchical` cắt đoạn con theo số ký tự cố định (256), nên có thể cắt ngang dòng "Trên 50.000.000 VNĐ | CEO" → Query OK? Có (từ khóa "55 triệu" vs "50.000.000" khác cách viết số, BM25 không khớp được).
-- **Root cause:** Chunking cắt ngang bảng, cộng với cách chuẩn hóa số khác nhau ("55 triệu" ↔ "55.000.000").
-- **Suggested fix:** Dùng `chunk_structure_aware` cho tài liệu có bảng (giữ nguyên section), và chuẩn hóa số tiền ("X triệu" → "X.000.000") trước khi đưa vào BM25.
-
-### #3
 - **Question:** Nhân viên tạm ứng 15 triệu, sau 20 ngày mới thanh toán. Bị phạt bao nhiêu?
 - **Expected:** Quá hạn 5 ngày; 2%/tháng × 15tr = 300.000 VNĐ/tháng (pro-rata ≈ 50.000 VNĐ).
-- **Got (suy ra):** LLM tự tính ra con số cuối cùng. Phép tính đó không có nguyên văn trong context nên RAGAS coi là claim không được hỗ trợ.
-- **Worst metric:** faithfulness = 0.33
-- **Error Tree:** Output sai một phần → Context đúng? **Có** (`tam_ung.md`: hạn 15 ngày, phí 2%/tháng) → Query OK? Có → Lỗi nằm ở **generation / reasoning**.
-- **Root cause:** Câu hỏi dạng numeric reasoning. LLM suy luận nhiều bước mà không trích dẫn căn cứ, nên faithfulness bị phạt.
-- **Suggested fix:** Prompt yêu cầu ghi rõ từng bước: "Theo context: hạn 15 ngày, phí 2%/tháng → quá hạn 5 ngày → ...". Mỗi claim trung gian đều bám vào context nên verify được.
+- **Got:** "Nhân viên sẽ bị phạt 600.000 VNĐ. (2% của 15.000.000 VNĐ là 300.000 VNĐ/tháng, sau 20 ngày tương đương 1 tháng)."
+- **Worst metric:** faithfulness = 0.33 (AR 0.80, CP 1.0, CR 0.67)
+- **Error Tree:** Output **sai** → Context đúng? **Có** (`tam_ung.md`: hạn 15 ngày, phí 2%/tháng) → Query OK? Có → Lỗi ở **generation / reasoning**: LLM tính sai (600k) và tự mâu thuẫn ngay trong câu trả lời (300k/tháng × "1 tháng" = 600k).
+- **Root cause:** LLM tính toán nhiều bước mà không có bước trung gian. Nó bỏ qua 15 ngày miễn phạt và áp phí cho toàn bộ 20 ngày.
+- **Suggested fix:** Prompt chain-of-thought có cấu trúc: (1) trích nguyên văn quy định, (2) tính số ngày quá hạn, (3) áp công thức. Hoặc giao phần tính cho tool/calculator thay vì để LLM tự tính.
+
+### #3
+- **Question:** Nếu cần mua một chiếc laptop 30 triệu cho nhân viên mới, ai phê duyệt và cần gì từ phòng CNTT?
+- **Expected:** 5–50 triệu → Giám đốc phòng ban (Director); cần xác nhận cấu hình từ CNTT; > 10 triệu cần ít nhất 3 báo giá.
+- **Got:** "Giám đốc phòng ban (Director) sẽ phê duyệt đơn hàng 30 triệu VNĐ. Cần có xác nhận của phòng CNTT về cấu hình kỹ thuật trước khi đề xuất."
+- **Worst metric:** faithfulness = 0.50 (AR 0.80, CP 1.0, CR 1.0)
+- **Error Tree:** Output **đúng nhưng thiếu** (không nhắc 3 báo giá) → Context đúng? **Có** (`mua_sam.md` ở top-1) → Query OK? Có → Lỗi ở **generation**, cộng với giới hạn của metric: claim "Director phê duyệt đơn 30 triệu" là suy luận từ ngưỡng 5–50 triệu, không có nguyên văn trong context, nên judge chấm là không được hỗ trợ.
+- **Root cause:** Câu trả lời không bám vào câu chữ trong context: LLM nêu kết luận mà không dẫn ngưỡng làm căn cứ. Thêm vào đó, prompt "trả lời ngắn gọn" khiến LLM bỏ sót yêu cầu 3 báo giá.
+- **Suggested fix:** Prompt yêu cầu dẫn nguyên văn quy định trước khi kết luận ("Theo quy định: 5–50 triệu → Director, nên…") và liệt kê **mọi** điều kiện áp dụng.
 
 ### #4
-- **Question:** Nghỉ phép không lương 20 ngày cần ai phê duyệt?
-- **Expected:** 16–30 ngày → CEO phê duyệt; nghỉ > 14 ngày phải tự đóng bảo hiểm.
-- **Got (suy ra):** Đúng ý chính nhưng thêm hoặc trộn các mức phê duyệt khác (trưởng phòng, Giám đốc Nhân sự). Một nửa số claim không khớp.
-- **Worst metric:** faithfulness = 0.50
-- **Error Tree:** Output sai một phần → Context đúng? **Có** (`nghi_phep_khong_luong.md` liệt kê cả 3 bậc 1–5 / 6–15 / 16–30 ngày) → Query OK? Có → Lỗi ở **generation**: LLM không chọn đúng một bậc.
-- **Root cause:** Context chứa nhiều ngưỡng số gần nhau, LLM liệt kê dư hoặc diễn giải sai ngưỡng.
-- **Suggested fix:** Prompt: "Chỉ nêu mức áp dụng cho đúng giá trị trong câu hỏi". Thêm few-shot cho dạng câu hỏi ngưỡng / khoảng.
+- **Question:** Lương thử việc của nhân viên Junior mức cao nhất là bao nhiêu?
+- **Expected:** 85% × 20.000.000 = 17.000.000 VNĐ/tháng.
+- **Got:** "Lương thử việc của nhân viên Junior mức cao nhất là 17.000.000 VNĐ (85% của 20.000.000 VNĐ)."
+- **Worst metric:** faithfulness = 0.50 (AR 0.83, CP 1.0, CR 1.0)
+- **Error Tree:** Output **đúng** → Context đúng? **Có** (bảng lương + chính sách thử việc ở top-2) → Query OK? Có → **Không có lỗi pipeline**. Điểm thấp là **false negative của metric**: con số 17.000.000 là kết quả tính toán, không xuất hiện nguyên văn trong context.
+- **Root cause:** Faithfulness của RAGAS chấm theo từng claim. Claim phái sinh từ phép tính đúng vẫn bị coi là "không được hỗ trợ".
+- **Suggested fix:** Không sửa pipeline. Trong câu trả lời, ghi rõ hai dữ kiện gốc ("Junior tối đa 20.000.000; thử việc hưởng 85%") để judge verify được từng bước. Với các câu numeric, đánh giá bổ sung bằng metric exact-match so với ground truth.
 
 ### #5
-- **Question:** Nhân viên được nghỉ bao nhiêu ngày phép năm?
-- **Expected:** 15 ngày (v2024); v2023 (12 ngày) đã bị thay thế.
-- **Got (suy ra):** Câu trả lời đúng, nhưng context lẫn cả bản v2023.
-- **Worst metric:** context_precision = 0.50
-- **Error Tree:** Output đúng → Context đúng? **Lẫn tạp**: cả `nghi_phep_nam_v2023.md` và `v2024.md` đều được retrieve vì nội dung gần như giống hệt. Chunk v2023 lỗi thời chiếm một trong 2 vị trí đầu → Query OK? Có.
-- **Root cause:** Xung đột phiên bản tài liệu (version conflict). Index không có metadata hiệu lực, nên retriever không phân biệt được bản cũ và bản mới.
-- **Suggested fix:** Trích `Ngày hiệu lực` / `Phiên bản` vào metadata, rồi filter tài liệu superseded (hoặc chỉ giữ bản mới nhất cho mỗi chủ đề) trước khi rerank.
+- **Question:** Có cần kích hoạt xác thực đa yếu tố (MFA) không?
+- **Expected:** Có, theo chính sách mật khẩu v2.0 (bắt buộc MFA cho email, VPN, hệ thống nội bộ); bản v1.0 cũ không yêu cầu MFA.
+- **Got:** "Có, tất cả nhân viên **bắt buộc** kích hoạt MFA cho tài khoản email, VPN và các hệ thống nội bộ."
+- **Worst metric:** context_recall = 0.50 (F 1.0, AR 0.85, CP 1.0)
+- **Error Tree:** Output **đúng** → Context đúng? **Thiếu**: top-1 là `mat_khau_v2.md`, nhưng slot 2–3 là mua sắm và phân loại dữ liệu (nhiễu). `mat_khau_v1.md` không được retrieve nên không đủ căn cứ cho ý "bản cũ không yêu cầu MFA" → Query OK? Có.
+- **Root cause:** Reranker chỉ giữ 1 chunk liên quan, 2 slot còn lại bị lấp bằng nhiễu, vì không có ngưỡng điểm tối thiểu.
+- **Suggested fix:** Bỏ các chunk có `rerank_score` dưới ngưỡng thay vì luôn lấy đủ top-3. Với câu hỏi về chính sách, retrieve thêm theo metadata `topic` để lấy cả bản cũ và bản mới khi câu hỏi cần so sánh phiên bản.
 
 ## Case Study (cho presentation)
 
-**Question chọn phân tích:** #5 — "Nhân viên được nghỉ bao nhiêu ngày phép năm?" (version conflict, lỗi điển hình của RAG trong doanh nghiệp)
+**Question chọn phân tích:** #2 — "Tạm ứng 15 triệu, 20 ngày mới thanh toán, bị phạt bao nhiêu?". Đây là case duy nhất trong bottom-5 mà **retrieval hoàn hảo nhưng câu trả lời sai về nội dung**.
 
 **Error Tree walkthrough:**
-1. Output đúng? → Đúng (15 ngày), nhờ prompt có dòng "ưu tiên phiên bản mới nhất".
-2. Context đúng? → Chỉ một nửa: chunk v2023 (12 ngày) được rank ngang chunk v2024, làm context_precision giảm còn 0.5.
+1. Output đúng? → **Sai**: 600.000 VNĐ, trong khi đáp án đúng là 300.000 VNĐ/tháng (≈ 50.000 VNĐ pro-rata).
+2. Context đúng? → **Đúng**: `tam_ung.md` ở top-1, chứa đủ "15 ngày" và "2%/tháng" (CP = 1.0).
 3. Query rewrite OK? → Query rõ ràng, không cần rewrite.
-4. Fix ở bước: **Indexing / metadata**. Gắn `effective_date` cho mỗi chunk và filter bản superseded. Không nên để prompt "chữa cháy" lỗi ở tầng retrieval.
+4. Fix ở bước: **Generation**. Thêm reasoning có cấu trúc (trích quy định → số ngày quá hạn → công thức), hoặc dùng tool calculator. Thêm retrieval hay rerank không giúp được case này.
 
 **Nếu có thêm 1 giờ, sẽ optimize:**
-- Lưu `answer` + `contexts` của từng câu vào report để chẩn đoán dựa trên output thật thay vì suy luận.
-- Giảm latency rerank 11.3s → < 1s: rerank 10 candidate thay vì 20, chạy model ở FP16/GPU, hoặc thử `FlashrankReranker`.
-- Dùng structure-aware chunking cho tài liệu có bảng (mua sắm, bảng lương), sau đó chạy lại RAGAS để đo Δ faithfulness.
+- Query decomposition cho câu multi-hop (#1), cộng với filter tài liệu superseded theo `Ngày hiệu lực`.
+- Prompt "trích dẫn rồi mới kết luận" cho câu numeric (#2, #3, #4); kỳ vọng faithfulness > 0.9.
+- Giảm latency rerank từ 11.3 s xuống < 1 s: rerank 10 candidate, FP16/GPU, hoặc `FlashrankReranker`. Thêm ngưỡng `rerank_score` để bỏ chunk nhiễu (#5).
